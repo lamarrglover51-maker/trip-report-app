@@ -63,8 +63,8 @@ if _required_password and not _check_password(_required_password):
 
 st.title("🚚 Trip On-Time Report Builder")
 st.caption(
-    "Connect your Google Sheet once, then filter by date / carrier / trip "
-    "and download the formatted Excel report."
+    "Connect your Google Sheet, filter by date / carrier / trip, and "
+    "download the formatted Excel report. · LG"
 )
 
 
@@ -75,7 +75,7 @@ st.caption(
 # ------------------------------------------------------------------
 
 with st.sidebar:
-    st.header("1. Connect")
+    st.subheader("🔗 Connect")
     sheet_input = st.text_input(
         "Google Sheet URL or key",
         value=st.session_state.get("sheet_input", ""),
@@ -132,9 +132,10 @@ data_max_date = max(pu_dates) if pu_dates else datetime.now().date()
 all_carriers = sorted({ld["carrier"] for ld in all_loads})
 
 with st.sidebar:
-    st.header("2. Filter")
+    st.divider()
+    st.subheader("🎚️ Filters")
 
-    if st.button("This week (Mon-Sun)", use_container_width=True):
+    if st.button("📅 This week (Mon-Sun)", use_container_width=True):
         today = datetime.now().date()
         st.session_state["date_range"] = (
             today - timedelta(days=today.weekday()),
@@ -192,13 +193,15 @@ loads, stats = parse_rows(
 # Step 3: on-screen summary
 # ------------------------------------------------------------------
 
-st.header("Summary")
+st.divider()
+st.header("📊 Summary")
 
 if not loads:
     st.warning("No loads match the current filters.")
     st.stop()
 
-col1, col2, col3, col4 = st.columns(4)
+summary_box = st.container(border=True)
+col1, col2, col3, col4 = summary_box.columns(4)
 col1.metric("Loads", len(loads))
 
 
@@ -315,7 +318,8 @@ with tab_preview:
 # Step 4: download
 # ------------------------------------------------------------------
 
-st.header("Download")
+st.divider()
+st.header("📥 Download")
 
 group_by = "trip" if trip_filter else "lane"
 buffer = io.BytesIO()

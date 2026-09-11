@@ -110,6 +110,36 @@ REQUIRED_FIELDS = [
 # never happened, so it's excluded from the report entirely.
 EXCLUDE_STATUS_KEYWORDS = ('TONU', 'CANCEL')
 
+# The standing set of regular Trip # numbers. Anything NOT in this list
+# is a one-off/manually-added trip and gets left out of the report by
+# default (see parse_rows) - only trips passed explicitly via --trips /
+# the app's trip box bypass this, so you can still look up a one-off
+# trip by number when you need to.
+#
+# This is a plain hardcoded list, not read from the sheet - edit it
+# directly here whenever the set of regular trips changes.
+REGULAR_TRIP_IDS = {
+    '1', '2', '6', '8',
+    '34', '36', '44', '45', '50', '51', '52', '53', '54', '55', '56', '63',
+    '68', '71', '72', '74', '75', '82', '86', '89', '91', '94', '97', '98',
+    '108', '110', '111', '112', '113', '114', '115', '116', '129', '130',
+    '205', '208', '210',
+    '250', '251', '252', '253', '254', '255', '256', '257', '258', '259',
+    '260', '261', '262', '270',
+    '300', '301', '302', '305', '400',
+    '1000', '1001', '1015',
+    '2000', '2001', '2003', '2004', '2005', '2010', '2012', '2013',
+    '2100', '2101',
+    '3002', '3003',
+    '4800', '4801', '4802', '4803', '4804', '4805', '4806', '4807', '4808',
+    '4809', '4810', '4811', '4812', '4813', '4814', '4815', '4816', '4817',
+    '4818', '4819', '4820', '4821', '4822', '4823', '4824', '4825', '4826',
+    '4827', '4828', '4829', '4830', '4831', '4832', '4833', '4834', '4835',
+    '4836', '4837', '4838', '4839', '4840', '4841', '4842', '4843', '4844',
+    '4845', '4846', '4847',
+    '6001', '6003', '6005', '6007', '6009',
+}
+
 
 def normalize_header(text):
     """Collapse whitespace/newlines and lowercase, for tolerant matching."""
@@ -268,7 +298,10 @@ def parse_rows(rows, start_date=None, end_date=None, trip_filter=None,
 
     trip_filter: optional set of strings. If given, a row is only kept
     when its Trip # OR its Load # matches something in the set - so you
-    can pass either kind of number and it just works.
+    can pass either kind of number and it just works. If left as None
+    (the default - i.e. no explicit trip lookup requested), this falls
+    back to REGULAR_TRIP_IDS, so one-off/manually-added trip numbers are
+    excluded from the report unless you explicitly ask to see one.
 
     carrier_filter: optional set of carrier-name strings (matched
     case-insensitively, exact match against the Carrier column). If
@@ -276,6 +309,9 @@ def parse_rows(rows, start_date=None, end_date=None, trip_filter=None,
     """
     if not rows:
         return [], {}
+
+    if trip_filter is None:
+        trip_filter = REGULAR_TRIP_IDS
 
     field_index = build_field_index(rows[0])
 
