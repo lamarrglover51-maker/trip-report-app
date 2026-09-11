@@ -19,7 +19,6 @@ import streamlit as st
 from build_trip_report import (
     compute_on_time_pct,
     fetch_sheet_rows,
-    parse_id_list,
     parse_rows,
     write_excel,
 )
@@ -142,6 +141,13 @@ data_max_date = max(pu_dates) if pu_dates else datetime.now().date()
 
 all_carriers = sorted({ld["carrier"] for ld in all_loads})
 
+# Numeric sort (1, 2, 6, 8, 34, ...) instead of string sort (1, 108, 2, ...)
+# so the picker below lists trips in the order you'd actually expect.
+all_trip_ids = sorted(
+    {ld["trip_id"] for ld in all_loads if ld["trip_id"]},
+    key=lambda t: (0, int(t)) if t.isdigit() else (1, t),
+)
+
 with st.sidebar:
     st.divider()
     st.subheader("🎚️ Filters")
@@ -172,15 +178,11 @@ with st.sidebar:
         default=all_carriers,
     )
 
-    trips_text = st.text_area(
-        "Trip # / Load # allowlist (optional)",
-        height=100,
-        help=(
-            'Only these trips will be included - anything not in this list is '
-            'ignored. Comma-separated ("53,55,121744191") or one per line '
-            '(paste a column straight out of Excel). Leave blank to include '
-            'every trip.'
-        ),
+    selected_trips = st.multiselect(
+        "Trip # (default = all regular trips)",
+        options=all_trip_ids,
+        default=all_trip_ids,
+        help="Deselect the trips you don't want in the report, same as Carrier above. Type to search.",
     )
 
 # Resolve widget values into parse_rows()-compatible filters.
@@ -191,10 +193,12 @@ else:
     # picking the second end of the range.
     start_date = end_date = date_range
 
-trip_filter = parse_id_list(trips_text)
-# Only treat carrier selection as a real filter once it's a strict subset
-# - if everything is (still) selected, that's equivalent to no filter.
+# Only treat a selection as a real filter once it's a strict subset - if
+# everything is (still) selected, that's equivalent to no filter (and
+# for trips specifically, "no filter" already means "regular trips
+# only" by default - see REGULAR_TRIP_IDS in build_trip_report.py).
 carrier_filter = set(selected_carriers) if set(selected_carriers) != set(all_carriers) else None
+trip_filter = set(selected_trips) if set(selected_trips) != set(all_trip_ids) else None
 
 loads, stats = parse_rows(
     raw_rows,
