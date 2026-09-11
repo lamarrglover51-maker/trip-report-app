@@ -11,7 +11,7 @@ touching the command line.
 """
 
 import io
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -135,16 +135,21 @@ with st.sidebar:
     st.divider()
     st.subheader("🎚️ Filters")
 
-    if st.button("📅 This week (Mon-Sun)", use_container_width=True):
-        today = datetime.now().date()
-        st.session_state["date_range"] = (
-            today - timedelta(days=today.weekday()),
-            today - timedelta(days=today.weekday()) + timedelta(days=6),
-        )
+    # Clamp any remembered date_range into the current data's bounds
+    # before handing it to the widget below - a stale value from a
+    # previous sheet/connection (or the actual data range shifting once
+    # filters like "regular trips only" are applied) would otherwise
+    # crash date_input with a value outside its own min/max.
+    _default_range = st.session_state.get("date_range", (data_min_date, data_max_date))
+    if isinstance(_default_range, tuple) and len(_default_range) == 2:
+        _clamped_start = min(max(_default_range[0], data_min_date), data_max_date)
+        _clamped_end = min(max(_default_range[1], data_min_date), data_max_date)
+        st.session_state["date_range"] = (_clamped_start, _clamped_end)
+    else:
+        st.session_state["date_range"] = (data_min_date, data_max_date)
 
     date_range = st.date_input(
         "PU Date range",
-        value=st.session_state.get("date_range", (data_min_date, data_max_date)),
         min_value=data_min_date,
         max_value=data_max_date,
         key="date_range",
