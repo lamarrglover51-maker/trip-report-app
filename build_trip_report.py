@@ -17,9 +17,29 @@ from openpyxl.utils import get_column_letter
 # 1. Define your 5-minute grace period for "on-time" calculations.
 ON_TIME_TOLERANCE_MINUTES = 5
 
-# 2. Fixed values that go on every row (edit these to match your account).
-SUPPLIER_NAME = 'One Brokerage LLC'
-CONTRACT_ID = 'FA2H2'
+def _config_value(secret_key, default):
+    """
+    Reads a config value from Streamlit secrets when available (the
+    hosted app's repo is public, so real business identifiers like the
+    broker name live only in Streamlit Cloud's Secrets manager, not in
+    this source file), otherwise falls back to `default` below - which
+    is what local/CLI use without any secrets.toml will get.
+    """
+    try:
+        import streamlit as st
+        val = st.secrets.get(secret_key)
+        if val:
+            return val
+    except Exception:
+        pass
+    return default
+
+
+# 2. Fixed values that go on every row (edit these to match your account -
+# or, for the hosted app, set supplier_name / contract_id in Secrets so
+# they don't need to sit in this public source file).
+SUPPLIER_NAME = _config_value('supplier_name', 'Your Broker Name')
+CONTRACT_ID = _config_value('contract_id', 'YOUR-CONTRACT-ID')
 
 # Shown as a signature line at the top of the Overview tab.
 PREPARED_BY = 'Lamarr Glover'
