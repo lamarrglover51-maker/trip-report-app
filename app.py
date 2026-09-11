@@ -64,7 +64,7 @@ if _required_password and not _check_password(_required_password):
 st.title("🚚 Trip On-Time Report Builder")
 st.caption(
     "Connect your Google Sheet, filter by date / carrier / trip, and "
-    "download the formatted Excel report. · LG"
+    "download the formatted Excel report."
 )
 
 
@@ -212,6 +212,17 @@ loads, stats = parse_rows(
 st.divider()
 st.header("📊 Summary")
 
+# Filters apply live (every change above reruns this instantly - there's
+# no separate "Apply" step), but that's not obvious just from the
+# sidebar, so spell out exactly what's active and how many loads it
+# produced right here, every time.
+_carrier_note = "all carriers" if carrier_filter is None else f"{len(carrier_filter)} carrier(s) selected"
+_trip_note = "regular trips only" if trip_filter is None else f"{len(trip_filter)} specific trip(s)"
+st.success(
+    f"✅ **Filters applied** — {start_date} → {end_date} · {_carrier_note} · {_trip_note} "
+    f"→ **{len(loads)}** loads match"
+)
+
 if not loads:
     st.warning("No loads match the current filters.")
     st.stop()
@@ -352,3 +363,6 @@ st.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     type="primary",
 )
+
+st.divider()
+st.caption("Made by Lamarr Glover")
