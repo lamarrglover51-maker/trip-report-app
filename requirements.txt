@@ -1,0 +1,5 @@
+openpyxl
+gspread
+google-auth-oauthlib
+streamlit
+pandas

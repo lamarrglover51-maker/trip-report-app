@@ -1,0 +1,15 @@
+# Google credentials - never commit these
+credentials.json
+credentials.json.json
+.streamlit/secrets.toml
+
+# Report input/output - local working files, not part of the app
+input.txt
+*.xlsx
+
+# Python
+__pycache__/
+*.pyc
+
+# Streamlit
+.streamlit/secrets.toml.bak
