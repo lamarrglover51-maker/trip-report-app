@@ -4,9 +4,9 @@ Streamlit web app for build_trip_report.py.
 Run with:
     streamlit run app.py
 
-Lets you connect to your Google Sheet once, then interactively filter by
-PU date range, carrier, and trip/load number, see the on-time % summary
-right on screen, and download the styled .xlsx report - all without
+Connects to your Google Sheet, lets you pick a PU date range / carrier /
+trip selection and click Apply Filters, then shows the on-time % summary
+on screen and offers the styled .xlsx report for download - all without
 touching the command line.
 """
 
@@ -81,10 +81,16 @@ st.caption(
 _default_sheet_url = _get_secret("sheet_url")
 _default_worksheet = _get_secret("worksheet_name")  # optional, rarely needed
 
+def _invalidate_data():
+    st.session_state.pop("raw_rows", None)
+    st.session_state.pop("all_loads", None)
+    st.session_state.pop("all_stats", None)
+
+
 with st.sidebar:
     if _default_sheet_url:
         if st.button("🔄 Refresh data", use_container_width=True):
-            st.session_state.pop("raw_rows", None)
+            _invalidate_data()
     else:
         st.subheader("🔗 Connect")
         st.caption("No sheet_url configured in secrets - enter one manually.")
@@ -99,7 +105,7 @@ with st.sidebar:
         if st.button("Connect / Refresh data", type="primary", use_container_width=True):
             st.session_state["sheet_input"] = sheet_input.strip()
             st.session_state["worksheet_input"] = worksheet_input.strip()
-            st.session_state.pop("raw_rows", None)
+            _invalidate_data()
 
 _active_sheet_url = _default_sheet_url or st.session_state.get("sheet_input")
 _active_worksheet = _default_worksheet or st.session_state.get("worksheet_input") or None
@@ -118,13 +124,20 @@ if "raw_rows" not in st.session_state:
 raw_rows = st.session_state["raw_rows"]
 st.sidebar.caption(f"✅ Connected · {max(len(raw_rows) - 1, 0)} rows loaded")
 
-# Parse once with no filters, purely to populate the filter widgets
-# (unique carriers, date bounds) and to know the full unfiltered size.
-try:
-    all_loads, _all_stats = parse_rows(raw_rows)
-except ValueError as e:
-    st.error(str(e))
-    st.stop()
+# Parse the sheet into loads ONCE per connection and cache it. This is
+# the expensive step (cleaning + datetime-parsing every field, for every
+# row) - doing it here instead of on every filter tweak is what actually
+# makes filtering fast, since adjusting filters below then only ever
+# re-slices this already-parsed list rather than re-reading the sheet.
+if "all_loads" not in st.session_state:
+    try:
+        st.session_state["all_loads"], st.session_state["all_stats"] = parse_rows(raw_rows)
+    except ValueError as e:
+        st.error(str(e))
+        st.stop()
+
+all_loads = st.session_state["all_loads"]
+_all_stats = st.session_state["all_stats"]
 
 if not all_loads:
     st.warning("That sheet has no usable rows (after excluding blank/cancelled/TONU loads).")
@@ -165,25 +178,32 @@ with st.sidebar:
     else:
         st.session_state["date_range"] = (data_min_date, data_max_date)
 
-    date_range = st.date_input(
-        "PU Date range",
-        min_value=data_min_date,
-        max_value=data_max_date,
-        key="date_range",
-    )
+    # Everything in this form is staged, not live - picking dates,
+    # (de)selecting carriers/trips doesn't touch the report below at all
+    # until "Apply Filters" is clicked, which is the one moment
+    # everything recomputes.
+    with st.form("filters_form"):
+        date_range = st.date_input(
+            "PU Date range",
+            min_value=data_min_date,
+            max_value=data_max_date,
+            key="date_range",
+        )
 
-    selected_carriers = st.multiselect(
-        "Carrier (default = all)",
-        options=all_carriers,
-        default=all_carriers,
-    )
+        selected_carriers = st.multiselect(
+            "Carrier (default = all)",
+            options=all_carriers,
+            default=all_carriers,
+        )
 
-    selected_trips = st.multiselect(
-        "Trip # (default = all regular trips)",
-        options=all_trip_ids,
-        default=all_trip_ids,
-        help="Deselect the trips you don't want in the report, same as Carrier above. Type to search.",
-    )
+        selected_trips = st.multiselect(
+            "Trip # (default = all regular trips)",
+            options=all_trip_ids,
+            default=all_trip_ids,
+            help="Deselect the trips you don't want in the report, same as Carrier above. Type to search.",
+        )
+
+        st.form_submit_button("🔍 Apply Filters", type="primary", use_container_width=True)
 
 # Resolve widget values into parse_rows()-compatible filters.
 if isinstance(date_range, tuple) and len(date_range) == 2:
@@ -200,13 +220,48 @@ else:
 carrier_filter = set(selected_carriers) if set(selected_carriers) != set(all_carriers) else None
 trip_filter = set(selected_trips) if set(selected_trips) != set(all_trip_ids) else None
 
-loads, stats = parse_rows(
-    raw_rows,
-    start_date=start_date,
-    end_date=end_date,
-    trip_filter=trip_filter,
-    carrier_filter=carrier_filter,
-)
+
+def filter_loads(loads, start_date, end_date, carrier_filter, trip_filter):
+    """
+    Re-filters an already-parsed loads list (mirrors the equivalent
+    checks in build_trip_report.parse_rows(), just against pre-parsed
+    dicts instead of raw sheet strings) - cheap date/set comparisons
+    only, no re-cleaning or re-parsing, so this is fast enough to run on
+    every "Apply Filters" click.
+    """
+    stats = {
+        'skipped_unparseable_date': 0,
+        'skipped_date_range': 0,
+        'skipped_carrier_filter': 0,
+        'skipped_trip_filter': 0,
+        'included': 0,
+        'total_rows': len(loads),
+    }
+    result = []
+    for ld in loads:
+        if start_date is not None or end_date is not None:
+            if ld['sched_arr'] is None:
+                stats['skipped_unparseable_date'] += 1
+                continue
+            day = ld['sched_arr'].date()
+            if start_date is not None and day < start_date:
+                stats['skipped_date_range'] += 1
+                continue
+            if end_date is not None and day > end_date:
+                stats['skipped_date_range'] += 1
+                continue
+        if carrier_filter is not None and ld['carrier'] not in carrier_filter:
+            stats['skipped_carrier_filter'] += 1
+            continue
+        if trip_filter is not None and ld['trip_id'] not in trip_filter:
+            stats['skipped_trip_filter'] += 1
+            continue
+        result.append(ld)
+        stats['included'] += 1
+    return result, stats
+
+
+loads, stats = filter_loads(all_loads, start_date, end_date, carrier_filter, trip_filter)
 
 
 # ------------------------------------------------------------------
@@ -259,15 +314,18 @@ col2.metric("OT Arrival", pct_label(loads, "on_time_arr"))
 col3.metric("OT Dispatch", pct_label(loads, "on_time_dispatch"))
 col4.metric("OT Delivery", pct_label(loads, "on_time_delivery"))
 
-with st.expander(f"Row filtering detail ({stats['included']} of {stats['total_rows']} rows included)"):
+with st.expander(f"Row filtering detail ({stats['included']} of {stats['total_rows']} regular-trip rows shown)"):
     st.write(
-        f"- Skipped (blank row): {stats['skipped_blank']}\n"
-        f"- Skipped (cancelled/TONU): {stats['skipped_cancelled_tonu']}\n"
-        f"- Skipped (outside date range): {stats['skipped_date_range']}\n"
-        f"- Skipped (unparseable date): {stats['skipped_unparseable_date']}\n"
-        f"- Skipped (trip filter): {stats['skipped_trip_filter']}\n"
-        f"- Skipped (carrier filter): {stats['skipped_carrier_filter']}\n"
-        f"- Skipped (no check-in/out at pickup or delivery): {stats['skipped_missing_checkin']}"
+        "**Always excluded (data quality, from the full sheet):**\n"
+        f"- Blank rows: {_all_stats['skipped_blank']}\n"
+        f"- Cancelled/TONU: {_all_stats['skipped_cancelled_tonu']}\n"
+        f"- No check-in/out at pickup or delivery: {_all_stats['skipped_missing_checkin']}\n"
+        f"- Not a regular trip: {_all_stats['skipped_trip_filter']}\n"
+        "\n**Excluded by your current filters:**\n"
+        f"- Unparseable PU date: {stats['skipped_unparseable_date']}\n"
+        f"- Outside date range: {stats['skipped_date_range']}\n"
+        f"- Carrier filter: {stats['skipped_carrier_filter']}\n"
+        f"- Trip filter: {stats['skipped_trip_filter']}"
     )
 
 tab_carrier, tab_lane, tab_preview = st.tabs(["By Carrier", "By Lane", "Load preview"])
