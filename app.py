@@ -69,44 +69,55 @@ st.caption(
 
 
 # ------------------------------------------------------------------
-# Step 1: connect to the sheet (fetched once, cached in session_state so
-# every filter change below just re-slices the same data locally instead
-# of re-hitting Google Sheets).
+# Step 1: connect to the sheet. There's only one sheet in use, so its
+# URL lives in secrets (kept out of the public repo, same reasoning as
+# supplier_name/contract_id) and the app connects to it automatically -
+# no manual entry needed. Data is fetched once per session and cached,
+# so every filter change below just re-slices the same data locally
+# instead of re-hitting Google Sheets; use "Refresh data" to pull the
+# latest data on demand. If sheet_url isn't configured (e.g. local use
+# without secrets set up), a manual entry box is shown instead.
 # ------------------------------------------------------------------
 
-with st.sidebar:
-    st.subheader("🔗 Connect")
-    sheet_input = st.text_input(
-        "Google Sheet URL or key",
-        value=st.session_state.get("sheet_input", ""),
-        help="Paste the full sheet URL, or just the sheet's key/ID.",
-    )
-    worksheet_input = st.text_input(
-        "Worksheet/tab name (optional)",
-        value=st.session_state.get("worksheet_input", ""),
-        help="Leave blank to use the first tab in the sheet.",
-    )
-    connect_clicked = st.button("Connect / Refresh data", type="primary", use_container_width=True)
+_default_sheet_url = _get_secret("sheet_url")
+_default_worksheet = _get_secret("worksheet_name")  # optional, rarely needed
 
-if connect_clicked:
-    if not sheet_input.strip():
-        st.sidebar.error("Enter a Google Sheet URL or key first.")
+with st.sidebar:
+    if _default_sheet_url:
+        if st.button("🔄 Refresh data", use_container_width=True):
+            st.session_state.pop("raw_rows", None)
     else:
-        with st.spinner("Reading sheet... (a browser window may open the first time, for Google login)"):
-            try:
-                rows = fetch_sheet_rows(sheet_input.strip(), worksheet_input.strip() or None)
-                st.session_state["raw_rows"] = rows
-                st.session_state["sheet_input"] = sheet_input.strip()
-                st.session_state["worksheet_input"] = worksheet_input.strip()
-                st.sidebar.success(f"Loaded {max(len(rows) - 1, 0)} rows.")
-            except Exception as e:
-                st.sidebar.error(f"Couldn't read that sheet:\n\n{e}")
+        st.subheader("🔗 Connect")
+        st.caption("No sheet_url configured in secrets - enter one manually.")
+        sheet_input = st.text_input(
+            "Google Sheet URL or key",
+            value=st.session_state.get("sheet_input", ""),
+        )
+        worksheet_input = st.text_input(
+            "Worksheet/tab name (optional)",
+            value=st.session_state.get("worksheet_input", ""),
+        )
+        if st.button("Connect / Refresh data", type="primary", use_container_width=True):
+            st.session_state["sheet_input"] = sheet_input.strip()
+            st.session_state["worksheet_input"] = worksheet_input.strip()
+            st.session_state.pop("raw_rows", None)
+
+_active_sheet_url = _default_sheet_url or st.session_state.get("sheet_input")
+_active_worksheet = _default_worksheet or st.session_state.get("worksheet_input") or None
 
 if "raw_rows" not in st.session_state:
-    st.info("👈 Enter your Google Sheet and click **Connect / Refresh data** to get started.")
-    st.stop()
+    if not _active_sheet_url:
+        st.info("👈 Enter your Google Sheet to get started.")
+        st.stop()
+    with st.spinner("Reading sheet..."):
+        try:
+            st.session_state["raw_rows"] = fetch_sheet_rows(_active_sheet_url, _active_worksheet)
+        except Exception as e:
+            st.error(f"Couldn't read the sheet:\n\n{e}")
+            st.stop()
 
 raw_rows = st.session_state["raw_rows"]
+st.sidebar.caption(f"✅ Connected · {max(len(raw_rows) - 1, 0)} rows loaded")
 
 # Parse once with no filters, purely to populate the filter widgets
 # (unique carriers, date bounds) and to know the full unfiltered size.
