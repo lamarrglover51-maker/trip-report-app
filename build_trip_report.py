@@ -41,9 +41,6 @@ def _config_value(secret_key, default):
 SUPPLIER_NAME = _config_value('supplier_name', 'Your Broker Name')
 CONTRACT_ID = _config_value('contract_id', 'YOUR-CONTRACT-ID')
 
-# Shown as a signature line at the top of the Overview tab.
-PREPARED_BY = 'Lamarr Glover'
-
 # 3. Where your Google OAuth credentials.json lives. Defaults to the same
 #    folder this script file is in, so just keep credentials.json next to
 #    build_trip_report.py and you don't need to touch this.
@@ -267,21 +264,52 @@ def parse_id_list(text):
 
 def clean_lane(lane_str):
     """
-    The sheet already gives us a ready-made "Origin - Dest" lane string
-    (the "Lane department OD pair" column), so we just clean it up rather
-    than reconstruct it - except for a same-city self-loop, which we
-    still normalize to "n/a".
+    Clean up a ready-made "Origin - Dest" string - just tidy it rather
+    than reconstruct it, except for a same-city self-loop, which is
+    normalized to "n/a" (a real self-loop, not missing data).
+
+    Returns None (not "n/a") when lane_str itself is blank, so callers
+    can tell "no lane text at all" apart from "an actual self-loop" and
+    fall back to another source instead of showing "n/a" too early.
     """
     if not lane_str:
-        return 'n/a'
+        return None
 
     normalized = re.sub(r'[\u2013\u2014]', '-', lane_str).strip()
+    if not normalized:
+        return None
+
     parts = [p.strip() for p in normalized.split(' - ') if p.strip()]
 
     if len(parts) >= 2 and parts[0] == parts[-1]:
         return 'n/a'
 
-    return normalized if normalized else 'n/a'
+    return normalized
+
+
+def build_od_pair(lane_str, spot_origin, spot_dest, origin, dest):
+    """
+    The "Lane department OD pair" column is blank for some rows (e.g.
+    spot-quoted loads that aren't tied to a standing lane), which used to
+    fall straight through to "n/a" even though the sheet has perfectly
+    good city data elsewhere. Instead, try in order:
+
+    1. "Lane department OD pair", if the sheet has one.
+    2. "Spot Origin" - "Spot Dest", for spot loads.
+    3. "ORIGIN" - "DEST", the raw pickup/delivery cities.
+    4. "n/a", only if none of the above have anything.
+    """
+    lane = clean_lane(lane_str)
+    if lane is not None:
+        return lane
+
+    if spot_origin and spot_dest:
+        return f'{spot_origin} - {spot_dest}'
+
+    if origin and dest:
+        return f'{origin} - {dest}'
+
+    return 'n/a'
 
 
 def build_notes(pu_arr_reason, pu_dp_reason, del_arr_reason, general_notes,
@@ -400,7 +428,11 @@ def parse_rows(rows, start_date=None, end_date=None, trip_filter=None,
                 stats['skipped_trip_filter'] += 1
                 continue
 
-        lane = clean_lane(get(row, 'lane'))
+        lane = build_od_pair(
+            get(row, 'lane'),
+            get(row, 'spot_origin'), get(row, 'spot_dest'),
+            get(row, 'origin'), get(row, 'dest'),
+        )
 
         dt_pu_arrival = parse_datetime(get(row, 'pu_arrival'))
         dt_pu_departure = parse_datetime(get(row, 'pu_departure'))
@@ -801,7 +833,7 @@ def _write_summary_table(ws, start_row, label_header, groups):
     return r + 1
 
 
-def write_overview_sheet(ws, groups, group_by, carrier_groups=None, prepared_by=None):
+def write_overview_sheet(ws, groups, group_by, carrier_groups=None):
     """
     One-page summary across every lane/trip tab: row per group with its
     load count and OT Arrival/Dispatch/Delivery %, plus an overall total
@@ -811,9 +843,6 @@ def write_overview_sheet(ws, groups, group_by, carrier_groups=None, prepared_by=
     When carrier_groups is given, a second table breaking the same
     metrics down by Carrier is written below the first, with a blank row
     and title in between.
-
-    prepared_by: optional name shown as a signature line above the
-    tables, with the generation date/time.
     """
     title_cell = ws.cell(row=1, column=1, value='TRIP ON-TIME PERFORMANCE REPORT')
     title_cell.font = Font(name='Arial', size=14, bold=True)
@@ -821,8 +850,6 @@ def write_overview_sheet(ws, groups, group_by, carrier_groups=None, prepared_by=
 
     generated = datetime.now().strftime('%m/%d/%Y %H:%M')
     subtitle = f'Generated: {generated}'
-    if prepared_by:
-        subtitle = f'Prepared by: {prepared_by}   |   {subtitle}'
     subtitle_cell = ws.cell(row=2, column=1, value=subtitle)
     subtitle_cell.font = Font(name='Arial', size=10, italic=True)
     ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=5)
@@ -876,7 +903,7 @@ def write_excel(loads, output_file, group_by='lane'):
     # Overview tab first, so it's the first thing you see when you open
     # the workbook.
     overview_ws = wb.create_sheet(title='Overview')
-    write_overview_sheet(overview_ws, groups, group_by, carrier_groups, prepared_by=PREPARED_BY)
+    write_overview_sheet(overview_ws, groups, group_by, carrier_groups)
 
     used_names = {'overview'}
     for key, group_loads in groups.items():
