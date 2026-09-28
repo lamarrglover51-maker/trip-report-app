@@ -66,7 +66,12 @@ GOOGLE_CREDENTIALS_PATH = os.path.join(
 # matter - "PU Arr Reason" matches "pu arr reason" or a wrapped two-line
 # header just fine).
 FIELD_HEADERS = {
-    'trip_id': '119498370',  # sheet's actual header for the trip column
+    # The trip column's header has changed before (it used to be a stray
+    # number, '119498370'), so any of these names is accepted - and if none
+    # match, the FIRST column (A) is used as the trip column, which is
+    # where Trip # always sits in the sheet. See build_field_index().
+    'trip_id': ('trip', 'trip #', 'trip#', 'trip id', 'trip number',
+                'sv trip id', '119498370'),
     'load_id': 'Load',
     'origin': 'ORIGIN',
     'pu_date': 'PU Date',
@@ -160,10 +165,27 @@ def build_field_index(header_row):
     missing = []
 
     for field, expected_header in FIELD_HEADERS.items():
-        idx = normalized_to_idx.get(normalize_header(expected_header))
+        # A field can list several accepted header names (tuple) - the
+        # first one found in row 1 wins.
+        candidates = (
+            expected_header if isinstance(expected_header, (tuple, list))
+            else (expected_header,)
+        )
+        idx = None
+        for candidate in candidates:
+            idx = normalized_to_idx.get(normalize_header(candidate))
+            if idx is not None:
+                break
+
+        # Trip # always lives in column A, so if its header text was
+        # renamed to something unexpected, fall back to that column
+        # instead of refusing to run.
+        if idx is None and field == 'trip_id' and header_row:
+            idx = 0
+
         if idx is None:
             if field in REQUIRED_FIELDS:
-                missing.append(expected_header)
+                missing.append(candidates[0])
         else:
             field_index[field] = idx
 
