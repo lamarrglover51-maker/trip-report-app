@@ -89,7 +89,7 @@ def _invalidate_data():
 
 with st.sidebar:
     if _default_sheet_url:
-        if st.button("🔄 Refresh data", use_container_width=True):
+        if st.button("🔄 Refresh data", width="stretch"):
             _invalidate_data()
     else:
         st.subheader("🔗 Connect")
@@ -102,7 +102,7 @@ with st.sidebar:
             "Worksheet/tab name (optional)",
             value=st.session_state.get("worksheet_input", ""),
         )
-        if st.button("Connect / Refresh data", type="primary", use_container_width=True):
+        if st.button("Connect / Refresh data", type="primary", width="stretch"):
             st.session_state["sheet_input"] = sheet_input.strip()
             st.session_state["worksheet_input"] = worksheet_input.strip()
             _invalidate_data()
@@ -203,7 +203,7 @@ with st.sidebar:
             help="Deselect the trips you don't want in the report, same as Carrier above. Type to search.",
         )
 
-        st.form_submit_button("🔍 Apply Filters", type="primary", use_container_width=True)
+        st.form_submit_button("🔍 Apply Filters", type="primary", width="stretch")
 
 # Resolve widget values into parse_rows()-compatible filters.
 if isinstance(date_range, tuple) and len(date_range) == 2:
@@ -293,7 +293,7 @@ col1.metric("Loads", len(loads))
 
 def pct_label(loads, field):
     pct = compute_on_time_pct(loads, field)
-    return "n/a" if pct is None else f"{pct:.0%}"
+    return "—" if pct is None else f"{pct:.0%}"
 
 
 def pct100(loads, field):
@@ -348,7 +348,7 @@ with tab_carrier:
     )
     st.dataframe(
         carrier_df,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             c: st.column_config.NumberColumn(format="%.0f%%")
@@ -374,7 +374,7 @@ with tab_lane:
     )
     st.dataframe(
         lane_df,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             c: st.column_config.NumberColumn(format="%.0f%%")
@@ -400,7 +400,7 @@ with tab_preview:
             for ld in loads
         ]
     )
-    st.dataframe(preview_df, use_container_width=True, hide_index=True)
+    st.dataframe(preview_df, width="stretch", hide_index=True)
 
 
 # ------------------------------------------------------------------

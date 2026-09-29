@@ -6,8 +6,9 @@ import re
 from datetime import datetime, timedelta
 
 from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, Border, Side
+from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.properties import PageSetupProperties
 
 
 # ==========================================
@@ -262,54 +263,93 @@ def parse_id_list(text):
     return ids or None
 
 
+# Values the sheet itself sometimes carries to mean "nothing here".
+# They're treated as empty so they can never be printed in the report -
+# the board always has the real cities somewhere, so a placeholder in
+# one column just means "look in the next one".
+PLACEHOLDER_VALUES = {'n/a', 'na', 'n\\a', '-', '--', 'none', 'tbd', 'null', '#n/a'}
+
+
+def clean_city(text):
+    """
+    Tidy a single city/endpoint value: collapse runs of whitespace and
+    newlines into single spaces, trim, and treat the sheet's various
+    "nothing here" placeholders as genuinely empty.
+    """
+    cleaned = re.sub(r'\s+', ' ', (text or '').strip())
+    if cleaned.lower() in PLACEHOLDER_VALUES:
+        return ''
+    return cleaned
+
+
 def clean_lane(lane_str):
     """
-    Clean up a ready-made "Origin - Dest" string - just tidy it rather
-    than reconstruct it, except for a same-city self-loop, which is
-    normalized to "n/a" (a real self-loop, not missing data).
+    Tidy a ready-made "Origin - Dest" string into a consistently spaced
+    "Origin - Dest": en/em dashes become plain hyphens, doubled spaces
+    around the separator collapse (the sheet has rows like
+    "Capitol Heights, MD -  Indianapolis, IN"), and placeholders drop out.
 
-    Returns None (not "n/a") when lane_str itself is blank, so callers
-    can tell "no lane text at all" apart from "an actual self-loop" and
-    fall back to another source instead of showing "n/a" too early.
+    Returns '' when there's nothing usable, so callers can fall through
+    to the next source rather than printing a placeholder.
     """
-    if not lane_str:
-        return None
+    normalized = re.sub(r'[\u2013\u2014]', '-', (lane_str or ''))
+    normalized = re.sub(r'\s+', ' ', normalized).strip()
 
-    normalized = re.sub(r'[\u2013\u2014]', '-', lane_str).strip()
-    if not normalized:
-        return None
+    if not normalized or normalized.lower() in PLACEHOLDER_VALUES:
+        return ''
 
-    parts = [p.strip() for p in normalized.split(' - ') if p.strip()]
+    # Re-join on a canonical ' - ' so spacing is identical on every row,
+    # however the endpoints were spaced in the sheet.
+    parts = [clean_city(p) for p in normalized.split(' - ')]
+    parts = [p for p in parts if p]
 
-    if len(parts) >= 2 and parts[0] == parts[-1]:
-        return 'n/a'
+    if not parts:
+        return ''
 
-    return normalized
+    return ' - '.join(parts)
+
+
+def _endpoints(lane):
+    """The distinct endpoints of a cleaned lane string."""
+    return [p for p in lane.split(' - ') if p]
 
 
 def build_od_pair(lane_str, spot_origin, spot_dest, origin, dest):
     """
-    The "Lane department OD pair" column is blank for some rows (e.g.
-    spot-quoted loads that aren't tied to a standing lane), which used to
-    fall straight through to "n/a" even though the sheet has perfectly
-    good city data elsewhere. Instead, try in order:
+    Resolve the O/D PAIR cell from whichever columns the board actually
+    filled in for this row. The sheet spreads the same information
+    across several columns depending on how the load was booked - a
+    standing lane has "Lane department OD pair", a spot load has
+    "Spot Origin"/"Spot Dest", and every row has raw "ORIGIN"/"DEST" -
+    so a blank in the first one is a reason to look at the next one, not
+    a reason to print "n/a".
 
-    1. "Lane department OD pair", if the sheet has one.
-    2. "Spot Origin" - "Spot Dest", for spot loads.
-    3. "ORIGIN" - "DEST", the raw pickup/delivery cities.
-    4. "n/a", only if none of the above have anything.
+    Preference order, best first:
+
+    1. "Lane department OD pair" - the official lane name.
+    2. "Spot Origin" - "Spot Dest".
+    3. "ORIGIN" - "DEST".
+
+    A candidate with two *different* endpoints always wins, so a
+    same-city entry in the lane column (which used to be reported as
+    "n/a") gives way to a real origin/destination from another column.
+    If every candidate is a same-city loop, that's genuine data and gets
+    printed as-is. Only a completely empty row returns '' - a blank
+    cell, never the literal text "n/a".
     """
-    lane = clean_lane(lane_str)
-    if lane is not None:
-        return lane
+    candidates = [
+        clean_lane(lane_str),
+        ' - '.join(p for p in (clean_city(spot_origin), clean_city(spot_dest)) if p),
+        ' - '.join(p for p in (clean_city(origin), clean_city(dest)) if p),
+    ]
+    candidates = [c for c in candidates if c]
 
-    if spot_origin and spot_dest:
-        return f'{spot_origin} - {spot_dest}'
+    for candidate in candidates:
+        ends = _endpoints(candidate)
+        if len(ends) >= 2 and ends[0] != ends[-1]:
+            return candidate
 
-    if origin and dest:
-        return f'{origin} - {dest}'
-
-    return 'n/a'
+    return candidates[0] if candidates else ''
 
 
 def build_notes(pu_arr_reason, pu_dp_reason, del_arr_reason, general_notes,
@@ -653,18 +693,72 @@ SUMMARY_SOURCE_FIELD = {
     'OT Delivery %': 'on_time_delivery',
 }
 
+# Columns holding free text long enough that centering hurts - these
+# read left-aligned instead.
+LEFT_COLS = {16}  # NOTES
+
+# --- Palette ---------------------------------------------------------
+# Black header band with white type, hairline grey rules instead of hard
+# black ones (much calmer on a sheet this wide), and Excel's familiar
+# Good/Neutral/Bad greens, ambers and reds on the YES/NO and percentage
+# cells so the exceptions are the thing your eye lands on.
 FONT = Font(name='Arial', size=10)
 BOLD_FONT = Font(name='Arial', size=10, bold=True)
-THIN = Side(style='thin', color='000000')
+HEADER_FONT = Font(name='Arial', size=10, bold=True, color='FFFFFF')
+YES_FONT = Font(name='Arial', size=10, bold=True, color='006100')
+NO_FONT = Font(name='Arial', size=10, bold=True, color='9C0006')
+WARN_FONT = Font(name='Arial', size=10, bold=True, color='9C6500')
+
+HEADER_FILL = PatternFill('solid', fgColor='000000')
+BAND_FILL = PatternFill('solid', fgColor='F4F6F8')
+TOTAL_FILL = PatternFill('solid', fgColor='E8EAED')
+YES_FILL = PatternFill('solid', fgColor='C6EFCE')
+NO_FILL = PatternFill('solid', fgColor='FFC7CE')
+WARN_FILL = PatternFill('solid', fgColor='FFEB9C')
+
+THIN = Side(style='thin', color='BFBFBF')
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 CENTER = Alignment(horizontal='center', vertical='center', wrap_text=True)
+LEFT = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-# Matches the column widths measured from the reference file, with a
-# width for the inserted Carrier column (position 5) added in.
+# Wide enough that every header label wraps inside its own column
+# instead of being clipped - the Y/N columns in particular were 6.29
+# wide against labels like "ON TIME Arrival Y/N", which is what cut the
+# header text off mid-word.
 COLUMN_WIDTHS = [
-    19.86, 11.57, 7.71, 12.0, 18.0, 40.86, 19.71, 17.0, 6.29,
-    17.57, 19.43, 6.57, 18.86, 19.86, 6.29, 41.0, 9.14, 9.14, 9.14,
+    20,   # A  SUPPLIER NAME
+    12,   # B  Contract ID
+    10,   # C  SV Trip ID
+    13,   # D  Load ID
+    20,   # E  Carrier
+    38,   # F  O/D PAIR
+    18,   # G  Scheduled arrival time
+    18,   # H  Actual arrival time
+    11,   # I  ON TIME Arrival Y/N
+    18,   # J  actual dispatch time
+    18,   # K  planned dispatch time
+    11,   # L  Dispatch on time Y/N
+    18,   # M  Actual delivery time
+    18,   # N  planned delivery time
+    11,   # O  ON TIME DELIVERY y/n
+    46,   # P  NOTES
+    12, 12, 12,   # Q/R/S  summary percentages
 ]
+
+
+def pct_style(pct):
+    """
+    Font/fill for an on-time percentage: green from 95%, amber down to
+    85%, red below that - so a tab's performance reads at a glance
+    without comparing numbers by hand.
+    """
+    if pct is None:
+        return FONT, None
+    if pct >= 0.95:
+        return YES_FONT, YES_FILL
+    if pct >= 0.85:
+        return WARN_FONT, WARN_FILL
+    return NO_FONT, NO_FILL
 
 INVALID_SHEET_CHARS = re.compile(r'[\\/*?:\[\]]')
 
@@ -709,13 +803,18 @@ def compute_on_time_pct(group_loads, field):
 
 
 def write_lane_sheet(ws, loads):
-    # --- Header: row 1 merged into row 2 for columns A-O ---
+    # --- Header: row 1 merged into row 2 for columns A-P ---
     for col_idx, header in enumerate(HEADERS, start=1):
         cell = ws.cell(row=1, column=col_idx, value=header)
-        cell.font = FONT
+        cell.font = HEADER_FONT
         cell.alignment = CENTER
+        cell.fill = HEADER_FILL
         cell.border = BORDER
-        ws.cell(row=2, column=col_idx).border = BORDER
+        # The second half of the merged block needs the same fill, or
+        # the header band renders half-black in some viewers.
+        filler = ws.cell(row=2, column=col_idx)
+        filler.fill = HEADER_FILL
+        filler.border = BORDER
         ws.merge_cells(
             start_row=1, start_column=col_idx, end_row=2, end_column=col_idx
         )
@@ -729,17 +828,20 @@ def write_lane_sheet(ws, loads):
     for i, label in enumerate(SUMMARY_HEADERS):
         col_idx = summary_start_col + i
         header_cell = ws.cell(row=1, column=col_idx, value=label)
-        header_cell.font = FONT
+        header_cell.font = HEADER_FONT
         header_cell.alignment = CENTER
+        header_cell.fill = HEADER_FILL
         header_cell.border = BORDER
 
         pct = compute_on_time_pct(loads, SUMMARY_SOURCE_FIELD[label])
 
         pct_cell = ws.cell(row=2, column=col_idx, value=pct)
         pct_cell.number_format = '0%'
-        pct_cell.font = BOLD_FONT
         pct_cell.alignment = CENTER
         pct_cell.border = BORDER
+        pct_cell.font, pct_fill = pct_style(pct)
+        if pct_fill is not None:
+            pct_cell.fill = pct_fill
 
     # --- Data rows ---
     first_data_row = 3
@@ -763,21 +865,51 @@ def write_lane_sheet(ws, loads):
             load['notes'],
         ]
 
+        # Alternate a very light tint so the eye can follow a single
+        # load across 16 columns without losing its place.
+        banded = (r - first_data_row) % 2 == 1
+
         for col_idx, value in enumerate(row_values, start=1):
             cell = ws.cell(row=r, column=col_idx, value=value)
             cell.font = FONT
             cell.border = BORDER
-            cell.alignment = CENTER
+            cell.alignment = LEFT if col_idx in LEFT_COLS else CENTER
+
+            if banded:
+                cell.fill = BAND_FILL
 
             if col_idx in DATE_COLS:
                 cell.number_format = 'm/d/yy h:mm'
+            elif col_idx in YESNO_COLS:
+                if value == 'YES':
+                    cell.font = YES_FONT
+                    cell.fill = YES_FILL
+                elif value == 'NO':
+                    cell.font = NO_FONT
+                    cell.fill = NO_FILL
 
     # --- Column widths / freeze / row heights ---
     for col_idx, width in enumerate(COLUMN_WIDTHS, start=1):
         ws.column_dimensions[get_column_letter(col_idx)].width = width
 
+    # A merged block never auto-fits, so rows 1-2 are sized by hand to
+    # fit the longest wrapped label rather than clipping it.
+    ws.row_dimensions[1].height = 42
+    ws.row_dimensions[2].height = 16
+
     ws.freeze_panes = 'A3'
-    ws.row_dimensions[1].height = 30
+
+    # Every cell already carries its own hairline border, so Excel's
+    # own gridlines underneath just add noise.
+    ws.sheet_view.showGridLines = False
+
+    # Printing / "Save as PDF": landscape, squeezed to one page wide,
+    # with the header band repeated at the top of every page.
+    ws.page_setup.orientation = 'landscape'
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.print_title_rows = '1:2'
 
 
 def _write_summary_table(ws, start_row, label_header, groups):
@@ -791,8 +923,9 @@ def _write_summary_table(ws, start_row, label_header, groups):
 
     for col_idx, header in enumerate(headers, start=1):
         cell = ws.cell(row=start_row, column=col_idx, value=header)
-        cell.font = BOLD_FONT
+        cell.font = HEADER_FONT
         cell.alignment = CENTER
+        cell.fill = HEADER_FILL
         cell.border = BORDER
 
     r = start_row + 1
@@ -804,13 +937,20 @@ def _write_summary_table(ws, start_row, label_header, groups):
             compute_on_time_pct(group_loads, 'on_time_dispatch'),
             compute_on_time_pct(group_loads, 'on_time_delivery'),
         ]
+        banded = (r - start_row) % 2 == 0
+
         for col_idx, value in enumerate(row_values, start=1):
             cell = ws.cell(row=r, column=col_idx, value=value)
             cell.font = FONT
             cell.border = BORDER
-            cell.alignment = CENTER
+            cell.alignment = LEFT if col_idx == 1 else CENTER
+            if banded:
+                cell.fill = BAND_FILL
             if col_idx >= 3:
                 cell.number_format = '0%'
+                cell.font, pct_fill = pct_style(value)
+                if pct_fill is not None:
+                    cell.fill = pct_fill
         r += 1
 
     # Overall total row across every load in this table.
@@ -826,7 +966,8 @@ def _write_summary_table(ws, start_row, label_header, groups):
         cell = ws.cell(row=r, column=col_idx, value=value)
         cell.font = BOLD_FONT
         cell.border = BORDER
-        cell.alignment = CENTER
+        cell.alignment = LEFT if col_idx == 1 else CENTER
+        cell.fill = TOTAL_FILL
         if col_idx >= 3:
             cell.number_format = '0%'
 
@@ -864,10 +1005,16 @@ def write_overview_sheet(ws, groups, group_by, carrier_groups=None):
         carrier_title_cell.font = BOLD_FONT
         _write_summary_table(ws, title_row + 1, 'Carrier', carrier_groups)
 
-    ws.column_dimensions['A'].width = 40
+    ws.column_dimensions['A'].width = 42
     for col in ('B', 'C', 'D', 'E'):
-        ws.column_dimensions[col].width = 13
+        ws.column_dimensions[col].width = 14
     ws.freeze_panes = f'A{table_start_row + 1}'
+    ws.sheet_view.showGridLines = False
+
+    ws.page_setup.orientation = 'portrait'
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
 
 
 def write_excel(loads, output_file, group_by='lane'):
@@ -885,7 +1032,7 @@ def write_excel(loads, output_file, group_by='lane'):
         fallback_label = 'No Trip ID'
     else:
         group_field = 'lane'
-        fallback_label = 'Lane'
+        fallback_label = 'Unspecified Lane'
 
     # Group loads by the chosen field, preserving first-seen order.
     groups = {}
